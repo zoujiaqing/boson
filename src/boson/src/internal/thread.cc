@@ -147,6 +147,15 @@ void thread::register_write(int fd, routine_slot slot) {
   ++nb_suspended_routines_;
 }
 
+void thread::unregister(int fd) {
+  int existing = -1;
+  tie(existing, std::ignore) = loop_->get_events(fd);
+  if (0 <= existing) {
+    suspended_slots_.free(reinterpret_cast<std::size_t>(loop_->get_data(existing)));
+    loop_->unregister(existing);
+  }
+}
+
 void thread::unregister_expired_slot(std::size_t slot_index) {
   suspended_slots_.free(slot_index);
 }
@@ -175,13 +184,12 @@ void thread::read(int fd, void* data, event_status status) {
   }
   else {
     // Dry run, just disable the event
+    int existing_read = -1;
+    tie(existing_read, std::ignore) = loop_->get_events(fd);
+    if (0 <= existing_read)
+      loop_->unregister(existing_read);
     suspended_slots_.free(reinterpret_cast<std::size_t>(data));
   }
-    suspended_slots_.free(reinterpret_cast<std::size_t>(data));
-  int existing_read = -1;
-  tie(existing_read, std::ignore) = loop_->get_events(fd);
-  if (0 <= existing_read)
-    loop_->unregister(existing_read);
 }
 
 void thread::write(int fd, void* data, event_status status) {
@@ -191,12 +199,13 @@ void thread::write(int fd, void* data, event_status status) {
   }
   else {
     // Dry run, just disable the event
-  }
+    int existing_write= -1;
+    tie(std::ignore, existing_write) = loop_->get_events(fd);
+    if (0 <= existing_write)
+      loop_->unregister(existing_write);
     suspended_slots_.free(reinterpret_cast<std::size_t>(data));
-  int existing_write= -1;
-  tie(std::ignore, existing_write) = loop_->get_events(fd);
-  if (0 <= existing_write)
-    loop_->unregister(existing_write);
+  }
+    //suspended_slots_.free(reinterpret_cast<std::size_t>(data));
 }
 
 // called by engine

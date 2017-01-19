@@ -212,6 +212,9 @@ class thread : public event_handler {
   //
   void register_write(int fd, routine_slot slot);
 
+  // Unregisters an io event
+  void unregister(int event_id);
+
   /**
    * Unregisters the given slot
    *

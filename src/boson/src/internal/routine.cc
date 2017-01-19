@@ -28,10 +28,11 @@ routine::~routine() {
 }
 
 void routine::start_event_round() {
-  // Clean previous events
-  //previous_events_.clear();
-  //std::swap(previous_events_, events_);
-  events_.clear();
+  // Check last start was not cancelled
+  if (0 < events_.size()) {
+    previous_events_.clear();
+    std::swap(previous_events_, events_);
+  }
   // Create new event pointer
   current_ptr_ = routine_local_ptr_t(std::unique_ptr<routine>(this));
 }
@@ -65,6 +66,52 @@ void routine::add_write(int fd) {
 }
 
 size_t routine::commit_event_round() {
+  // Invalidate fd events that are not still in the new loop
+  for (auto& previous : previous_events_) {
+    switch (previous.type) {
+      case event_type::none:
+        break;
+      case event_type::timer:
+        break;
+      case event_type::io_read: {
+        bool unregister = true;
+        for (auto& event : events_) {
+          if (event.type == event_type::io_read) {
+            auto p = previous.data.get<int>();
+            auto e = event.data.get<int>();
+            if (p == e) {
+              unregister = false;
+              break;
+            }
+          }
+        }
+        if (unregister)
+            thread_->unregister(previous.data.get<int>());
+      } break;
+      case event_type::io_write: {
+        bool unregister = true;
+        for (auto& event : events_) {
+          if (event.type == event_type::io_write) {
+            auto p = previous.data.get<int>();
+            auto e = event.data.get<int>();
+            if (p == e) {
+              unregister = false;
+              break;
+            }
+          }
+        }
+        if (unregister)
+            thread_->unregister(previous.data.get<int>());
+      } break;
+      case event_type::sema_wait:
+      case event_type::sema_closed:
+      case event_type::io_read_panic:
+      case event_type::io_write_panic:
+        break;
+    }
+  }
+
+  previous_events_.clear();
   status_ = routine_status::wait_events;
   thread_->context() = jump_fcontext(thread_->context().fctx, nullptr);
   return happened_index_;
