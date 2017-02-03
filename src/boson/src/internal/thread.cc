@@ -6,6 +6,7 @@
 #include "internal/routine.h"
 #include "semaphore.h"
 #include "event_loop_impl.h"
+#include <iostream>
 
 namespace boson {
 namespace internal {
@@ -177,13 +178,13 @@ void thread::read(int fd, void* data, event_status status) {
   }
   else {
     // Dry run, just disable the event
-    suspended_slots_.free(reinterpret_cast<std::size_t>(data));
+    //std::cout << "Read event drop !\n";
   }
-    suspended_slots_.free(reinterpret_cast<std::size_t>(data));
-  int existing_read = -1;
-  tie(existing_read, std::ignore) = loop_->get_events(fd);
-  if (0 <= existing_read)
-    loop_->unregister(existing_read);
+  //suspended_slots_.free(reinterpret_cast<std::size_t>(data));
+  //int existing_read = -1;
+  //tie(existing_read, std::ignore) = loop_->get_events(fd);
+  //if (0 <= existing_read)
+    //loop_->unregister(existing_read);
 }
 
 void thread::write(int fd, void* data, event_status status) {
@@ -193,12 +194,13 @@ void thread::write(int fd, void* data, event_status status) {
   }
   else {
     // Dry run, just disable the event
+    //std::cout << "Write event drop !\n";
   }
-    suspended_slots_.free(reinterpret_cast<std::size_t>(data));
-  int existing_write= -1;
-  tie(std::ignore, existing_write) = loop_->get_events(fd);
-  if (0 <= existing_write)
-    loop_->unregister(existing_write);
+  //suspended_slots_.free(reinterpret_cast<std::size_t>(data));
+  //int existing_write= -1;
+  //tie(std::ignore, existing_write) = loop_->get_events(fd);
+  //if (0 <= existing_write)
+    //loop_->unregister(existing_write);
 }
 
 // called by engine

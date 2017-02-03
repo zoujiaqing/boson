@@ -23,11 +23,18 @@ void event_loop::epoll_update(int fd, fd_data& fddata, bool del_if_no_event) {
   new_event.data.fd = fd;
   int return_code = -1;
   if (0 != new_event.events) {
-    return_code = ::epoll_ctl(loop_fd_, EPOLL_CTL_MOD, fd, &new_event);
+    if (fddata.epoll_registered) {
+      return_code = ::epoll_ctl(loop_fd_, EPOLL_CTL_MOD, fd, &new_event);
+      if (return_code < 0 && ENOENT == errno) {
+        throw exception(std::string("Syscall error (epoll_ctl MOD): ") + ::strerror(errno));
+      }
+    }
+    else {
+      return_code = ::epoll_ctl(loop_fd_, EPOLL_CTL_ADD, fd, &new_event);
+      fddata.epoll_registered = true;
+    }
     if (return_code < 0) {
-      if (ENOENT == errno) {
-        return_code = ::epoll_ctl(loop_fd_, EPOLL_CTL_ADD, fd, &new_event);
-      } else if (EBADF == errno) {
+      if (EBADF == errno) {
         // Dispatch panic
         if (0 <= fddata.idx_read)
           dispatch_event(fddata.idx_read, event_status::panic);
@@ -44,41 +51,45 @@ void event_loop::epoll_update(int fd, fd_data& fddata, bool del_if_no_event) {
     if (return_code < 0 && errno != EBADF) {
       throw exception(std::string("Syscall error (epoll_ctl): ") + ::strerror(errno));
     }
+    fddata.epoll_registered = !del_if_no_event;
   }
 }
 
 void event_loop::dispatch_event(int event_id, event_status status) {
-  auto& data = events_data_[event_id];
-  switch (data.type) {
-    case event_type::event_fd: {
-      size_t buffer{0};
-      ssize_t nb_bytes = ::read(data.fd, &buffer, 8u);
-      assert(nb_bytes == 8);
-      if (loop_breaker_event_ == event_id) {
-        // Empty the queue and send panics
-        broken_loop_event_data* data = nullptr;
-        while((data = static_cast<decltype(data)>(loop_breaker_queue_.read(0)))) {
-          // We just ignore fds we dont have
-          if (static_cast<size_t>(data->fd) < fd_data_.size()) {
-            auto& fddata = get_fd_data(data->fd);
-            if (0 <= fddata.idx_read)
-              dispatch_event(fddata.idx_read, event_status::panic);
-            if (0 <= fddata.idx_write)
-              dispatch_event(fddata.idx_write, event_status::panic);
+  // We do not care to dispatch unused events since we use EPOLLET
+  if (0 <= event_id) {
+    auto& data = events_data_[event_id];
+    switch (data.type) {
+      case event_type::event_fd: {
+        size_t buffer{0};
+        ssize_t nb_bytes = ::read(data.fd, &buffer, 8u);
+        assert(nb_bytes == 8);
+        if (loop_breaker_event_ == event_id) {
+          // Empty the queue and send panics
+          broken_loop_event_data* data = nullptr;
+          while((data = static_cast<decltype(data)>(loop_breaker_queue_.read(0)))) {
+            // We just ignore fds we dont have
+            if (static_cast<size_t>(data->fd) < fd_data_.size()) {
+              auto& fddata = get_fd_data(data->fd);
+              if (0 <= fddata.idx_read)
+                dispatch_event(fddata.idx_read, event_status::panic);
+              if (0 <= fddata.idx_write)
+                dispatch_event(fddata.idx_write, event_status::panic);
+            }
+            delete data;
           }
-          delete data;
         }
-      }
-      else {
-        handler_.event(event_id, data.data, status);
-      }
-    } break;
-    case event_type::read: {
-      handler_.read(data.fd, data.data, status);
-    } break;
-    case event_type::write: {
-      handler_.write(data.fd, data.data, status);
-    } break;
+        else {
+          handler_.event(event_id, data.data, status);
+        }
+      } break;
+      case event_type::read: {
+        handler_.read(data.fd, data.data, status);
+      } break;
+      case event_type::write: {
+        handler_.write(data.fd, data.data, status);
+      } break;
+    }
   }
 }
 
@@ -140,17 +151,20 @@ void event_loop::send_event(int event) {
 }
 
 int event_loop::register_read(int fd, void* data) {
+  auto& fddata = get_fd_data(fd);
+  int event_id = fddata.idx_read;
+  if (event_id < 0) {
+    event_id = static_cast<int>(events_data_.allocate());
+    fddata.idx_read = event_id;
+    // Register in epoll loop
+    epoll_update(fd,fddata,false);
+  }
+
   // Creates users data
-  size_t event_id = static_cast<int>(events_data_.allocate());
   event_data& ev_data = events_data_[event_id];
   ev_data.fd = fd;
   ev_data.type = event_type::read;
   ev_data.data = data;
-  auto& fddata = get_fd_data(fd);
-  fddata.idx_read = event_id;
-
-  // Register in epoll loop
-  epoll_update(fd,fddata,false);
 
   ++nb_io_registered_;
   return event_id;
@@ -158,16 +172,20 @@ int event_loop::register_read(int fd, void* data) {
 
 int event_loop::register_write(int fd, void* data) {
   // Creates users data
-  size_t event_id = static_cast<int>(events_data_.allocate());
+  auto& fddata = get_fd_data(fd);
+  int event_id = fddata.idx_write;
+  if (event_id < 0) {
+    event_id = static_cast<int>(events_data_.allocate());
+    fddata.idx_write = event_id;
+    // Register in epoll loop
+    epoll_update(fd,fddata,false);
+  }
+
   event_data& ev_data = events_data_[event_id];
   ev_data.fd = fd;
   ev_data.type = event_type::write;
   ev_data.data = data;
-  auto& fddata = get_fd_data(fd);
-  fddata.idx_write = event_id;
 
-  // Register in epoll loop
-  epoll_update(fd,fddata,false);
 
   ++nb_io_registered_;
   return event_id;
@@ -205,11 +223,14 @@ void* event_loop::unregister(int event_id) {
     fddata.idx_write = -1;
 
   //epoll_update(event_data.fd, fddata,true);
-  epoll_update(event_data.fd, fddata, false);
-  if (event_data.type == event_type::event_fd)
+  if (event_data.type == event_type::event_fd) {
     noio_events_.erase(event_id);
-  else
+    epoll_update(event_data.fd, fddata, false);
+  }
+  else {
     --nb_io_registered_;
+  }
+
   void* data = event_data.data;
   events_data_.free(event_id);
   return data;

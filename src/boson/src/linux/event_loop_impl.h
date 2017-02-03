@@ -33,9 +33,12 @@ class event_loop {
   struct fd_data {
     int idx_read;
     int idx_write;
+    bool epoll_registered;
 
-    inline fd_data() : idx_read{-1}, idx_write{-1} {}
-    inline fd_data(int r, int w) : idx_read{r}, idx_write{w} {}
+    inline fd_data() : idx_read{-1}, idx_write{-1}, epoll_registered{false} {}
+    inline fd_data(fd_data const&) = default;
+    inline fd_data(fd_data&&) = default;
+    inline fd_data(int r, int w) : idx_read{r}, idx_write{w}, epoll_registered{false} {}
   };
 
   struct broken_loop_event_data {
